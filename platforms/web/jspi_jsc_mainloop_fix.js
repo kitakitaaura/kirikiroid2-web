@@ -14,6 +14,7 @@
 // CCApplication-emscripten.cpp），故此处无条件包 promising——与 Chrome 下
 // getWasmTableEntry 命中身份比较后的行为完全一致，对 V8 无行为变化。
 addToLibrary({
+#if JSPI
   emscripten_set_main_loop_arg__deps: [
     '$setMainLoop', '$MainLoop', '$handleException'
   ],
@@ -141,6 +142,7 @@ addToLibrary({
       });
     }
   },
+#endif
 
   // Browser-only policy boundary.  Android's OpenAL/Oboe device starts
   // synchronously, while a browser is allowed to create its AudioContext only

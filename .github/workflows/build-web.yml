@@ -86,6 +86,25 @@ jobs:
             echo "HAS_NUGET_KEY=true" >> $GITHUB_ENV
           fi
 
+      # run-vcpkg sets VCPKG_BINARY_SOURCES to x-gha, which vcpkg has removed,
+      # so without the NuGet key nothing was cached and every configure rebuilt
+      # all ports. Keep vcpkg's archives in a folder restored by actions/cache.
+      - name: Use a local vcpkg binary cache
+        if: ${{ env.HAS_NUGET_KEY != 'true' }}
+        run: |
+          mkdir -p "${{ github.workspace }}/.vcpkg-archives"
+          echo "VCPKG_BINARY_SOURCES=clear;files,${{ github.workspace }}/.vcpkg-archives,readwrite" >> "$GITHUB_ENV"
+
+      - name: Restore vcpkg binary cache
+        if: ${{ env.HAS_NUGET_KEY != 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-archives
+          key: vcpkg-archives-${{ env.EMSDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/**') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-archives-${{ env.EMSDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/**') }}-
+            vcpkg-archives-${{ env.EMSDK_VERSION }}-
+
       - name: Install Mono (for NuGet)
         if: ${{ env.HAS_NUGET_KEY == 'true' }}
         run: |
@@ -149,6 +168,15 @@ jobs:
           done
 
           exit "$configure_status"
+
+      # Save right after configure, so a later build failure still keeps the
+      # ports that were just compiled.
+      - name: Save vcpkg binary cache
+        if: ${{ always() && env.HAS_NUGET_KEY != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-archives
+          key: vcpkg-archives-${{ env.EMSDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg/**') }}-${{ github.run_id }}
 
       - name: Build
         run: |

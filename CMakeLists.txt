@@ -155,6 +155,9 @@ elseif(WEB)
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:-s PTHREAD_POOL_SIZE=${KRKR2_WEB_PTHREAD_POOL_SIZE}"
         "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=1048576"
+        # Main-loop override is #if JSPI inside; the audio resume hook is
+        # needed by both builds.
+        "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
         -fwasm-exceptions
         $<$<BOOL:${KRKR2_WEB_ENABLE_SOURCE_MAP}>:-gsource-map>
         $<$<CONFIG:Debug>:--emit-symbol-map>
@@ -179,7 +182,6 @@ elseif(WEB)
         target_link_options(${PROJECT_NAME} PRIVATE
             "SHELL:-s JSPI=1"
             "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick']"
-            "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
             "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js"
             -Wl,--wrap=pthread_create
             -Wl,--wrap=__pthread_create
