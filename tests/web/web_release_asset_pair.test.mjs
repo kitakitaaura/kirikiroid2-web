@@ -61,21 +61,26 @@ const continuationImports = WebAssembly.Module.imports(module).filter(
     item => item.module === "env" &&
         item.kind === "function" &&
         item.name.includes("WaveSoundContinuation"));
+// KRKR2_WEB_JSPI=OFF builds use the synchronous sound path, so they import
+// no continuation functions; shell.html records which build this is.
+const jspiBuild = !/jspiUnsupported = false &&/.test(html);
 assert.deepEqual(
     continuationImports.map(item => item.name).sort(),
-    [
+    jspiBuild ? [
       "TVPCompleteWaveSoundContinuation",
       "__asyncjs__TVPWaitWaveSoundContinuation",
-    ]);
+    ] : []);
 for(const {name} of continuationImports) {
     assert.ok(
         glue.includes(`function ${name}(`),
         `index.js does not define Wasm function import ${name}`);
 }
-assert.match(
-    glue,
-    /wasmImports=\{TVPCompleteWaveSoundContinuation[,}]/,
-    "index.js does not publish TVPCompleteWaveSoundContinuation to Wasm");
+if(jspiBuild) {
+    assert.match(
+        glue,
+        /wasmImports=\{TVPCompleteWaveSoundContinuation[,}]/,
+        "index.js does not publish TVPCompleteWaveSoundContinuation to Wasm");
+}
 
 const headers = fs.readFileSync(
     path.resolve(testDir, "../../_headers"), "utf8");
