@@ -42,6 +42,10 @@ option(BUILD_TOOLS "build tools execute build(exclude android ios)" ON)
 option(KRKR2_WEB_DEBUG_ENABLE_ASAN "enable AddressSanitizer in Web Debug builds" ON)
 option(KRKR2_WEB_ENABLE_SOURCE_MAP "emit a WebAssembly source map for Web builds" OFF)
 option(KRKR2_ENABLE_WASMTIME_HEADLESS "build the generic Wasmtime headless debug runner" OFF)
+# OFF builds a Web engine for browsers without WebAssembly JSPI (Safari < 27):
+# VirtualLazyFS reads with synchronous XHRs, sound uses the native synchronous
+# path, and pthreads come from a pre-created worker pool.
+option(KRKR2_WEB_JSPI "use WebAssembly JSPI in Web builds" ON)
 if(NOT DEFINED KRKR2_USE_STUB_SPDLOG)
     set(_KRKR2_USE_STUB_SPDLOG_DEFAULT OFF)
     if(WEB AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -79,6 +83,9 @@ elseif(WEB)
         $<$<BOOL:${KRKR2_WEB_ENABLE_SOURCE_MAP}>:-gline-tables-only>
     )
     add_link_options($<$<AND:$<CONFIG:Debug>,$<BOOL:${KRKR2_WEB_DEBUG_ENABLE_ASAN}>>:-fsanitize=address>)
+    if(NOT KRKR2_WEB_JSPI)
+        add_compile_definitions(KRKR2_WEB_SYNC_IO)
+    endif()
 endif()
 
 if(ANDROID)
@@ -90,9 +97,11 @@ elseif(WEB)
         message(FATAL_ERROR
             "Web pthread JSPI targets Emscripten 6.0.9; review its SDK lifecycle hooks before upgrading")
     endif()
-    add_executable(${PROJECT_NAME}
-        ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/main.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.c)
+    add_executable(${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/main.cpp)
+    if(KRKR2_WEB_JSPI)
+        target_sources(${PROJECT_NAME} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.c)
+    endif()
     set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "index" SUFFIX ".html")
     set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js
@@ -114,8 +123,17 @@ elseif(WEB)
     endif()
     # Worker 按需初始化：主线程创建时经 JSPI 等待，后台 pthread 经异步代理
     # 等待。已就绪 Worker 仍同步复用；此值只控制可选预热，不再要求覆盖峰值。
-    set(KRKR2_WEB_PTHREAD_POOL_SIZE "0" CACHE STRING
-        "Optional pre-warmed Emscripten pthread workers")
+    # 无 JSPI 时主线程不能等待新 Worker 启动，线程池须覆盖峰值并发线程，
+    # 沿用改为按需创建之前的 64（DRACU-RIOT! 实测 41）。
+    if(KRKR2_WEB_JSPI)
+        set(_KRKR2_WEB_POOL_DEFAULT "0")
+        set(KRKR2_WEB_REQUIRES_JSPI "true")
+    else()
+        set(_KRKR2_WEB_POOL_DEFAULT "64")
+        set(KRKR2_WEB_REQUIRES_JSPI "false")
+    endif()
+    set(KRKR2_WEB_PTHREAD_POOL_SIZE "${_KRKR2_WEB_POOL_DEFAULT}" CACHE STRING
+        "Pre-created Emscripten pthread workers (JSPI: optional warm-up; no JSPI: must cover peak live threads)")
     target_link_options(${PROJECT_NAME} PRIVATE
         "SHELL:-s USE_SDL=2"
         "SHELL:-s USE_SDL_TTF=2"
@@ -137,6 +155,16 @@ elseif(WEB)
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:-s PTHREAD_POOL_SIZE=${KRKR2_WEB_PTHREAD_POOL_SIZE}"
         "SHELL:-s DEFAULT_PTHREAD_STACK_SIZE=1048576"
+        -fwasm-exceptions
+        $<$<BOOL:${KRKR2_WEB_ENABLE_SOURCE_MAP}>:-gsource-map>
+        $<$<CONFIG:Debug>:--emit-symbol-map>
+        $<$<CONFIG:Debug>:-g2>
+        $<$<CONFIG:Debug>:-O1>
+        -pthread
+        -lopenal
+        --shell-file ${CMAKE_CURRENT_BINARY_DIR}/shell.html
+    )
+    if(KRKR2_WEB_JSPI)
         # VirtualLazyFS: 主线程文件读经 JSPI 挂起等待 JS 异步供数
         # （Chromium 137+ / WebKit 26.4+，即 Safari 27 beta；EM_ASYNC_JS 导入
         # 自动包 WebAssembly.Suspending）。
@@ -148,22 +176,16 @@ elseif(WEB)
         # 包 WebAssembly.promising。该识别靠函数对象身份比较，JSC 不满足
         # table.get/export 身份等价，需用户库覆盖 set_main_loop_arg 兜底，
         # 见 jspi_jsc_mainloop_fix.js。
-        "SHELL:-s JSPI=1"
-        "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick']"
-        "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
-        "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js"
-        -Wl,--wrap=pthread_create
-        -Wl,--wrap=__pthread_create
-        -Wl,--wrap=emscripten_builtin_pthread_create
-        -fwasm-exceptions
-        $<$<BOOL:${KRKR2_WEB_ENABLE_SOURCE_MAP}>:-gsource-map>
-        $<$<CONFIG:Debug>:--emit-symbol-map>
-        $<$<CONFIG:Debug>:-g2>
-        $<$<CONFIG:Debug>:-O1>
-        -pthread
-        -lopenal
-        --shell-file ${CMAKE_CURRENT_BINARY_DIR}/shell.html
-    )
+        target_link_options(${PROJECT_NAME} PRIVATE
+            "SHELL:-s JSPI=1"
+            "SHELL:-s JSPI_EXPORTS=['krkr2_main_loop_tick']"
+            "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/jspi_jsc_mainloop_fix.js"
+            "SHELL:--js-library ${CMAKE_CURRENT_SOURCE_DIR}/platforms/web/pthread_jspi.js"
+            -Wl,--wrap=pthread_create
+            -Wl,--wrap=__pthread_create
+            -Wl,--wrap=emscripten_builtin_pthread_create
+        )
+    endif()
     # UI 资源/字体改经 VirtualLazyFS 按需读取（cocos CCFileUtils →
     # krkr2_vlfs_read_all 桥）：打成 store（不压缩）模式 assets.zip，
     # shell.html 启动时 fetch 为 Blob 注册进 VLFS，条目即 Blob 切片，

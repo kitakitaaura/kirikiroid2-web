@@ -21,7 +21,15 @@
 
 #include "WaveIntf.h"
 #include "WaveLoopManager.h"
-#ifdef __EMSCRIPTEN__
+
+// Web builds with JSPI read sound files through Promise-backed continuations
+// (the TVP_WAVE_ASYNC_WEB blocks). KRKR2_WEB_JSPI=OFF builds read files
+// synchronously, so they compile the native synchronous path instead.
+#if defined(__EMSCRIPTEN__) && !defined(KRKR2_WEB_SYNC_IO)
+#define TVP_WAVE_ASYNC_WEB 1
+#endif
+
+#ifdef TVP_WAVE_ASYNC_WEB
 #include <atomic>
 #include <memory>
 #endif
@@ -141,7 +149,7 @@ private:
     tTJSCriticalSection BufferCS;
     tTJSCriticalSection L2BufferCS;
     tTJSCriticalSection L2BufferRemainCS;
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     tTJSCriticalSection AsyncDecodeCS;
 #endif
 
@@ -171,7 +179,7 @@ private:
     tjs_int L2BufferWritePos;
     tjs_int L2BufferRemain;
     bool L2BufferEnded;
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     // Browser continuation state. These fields exist only at the unavoidable
     // asynchronous file-system boundary; Android's object layout and the
     // synchronous implementation above remain unchanged.
@@ -205,7 +213,7 @@ private:
 
 public:
     bool FillL2Buffer(bool firstwrite, bool fromdecodethread);
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     using tFillL2BufferAsyncCallback = std::function<void(bool)>;
     void FillL2BufferAsync(bool firstwrite, bool fromdecodethread,
                            tFillL2BufferAsyncCallback completion);
@@ -233,7 +241,7 @@ public:
 
 private:
     void StartPlay();
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     std::shared_ptr<tAsyncPlayContext> StartPlayAsync();
     void ContinueStartPlayAsync(
         const std::shared_ptr<tAsyncPlayContext> &context, int remaining,
@@ -275,7 +283,7 @@ protected:
 
 public:
     void Open(const ttstr &storagename);
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
 private:
     struct tAsyncOpenContext;
     void CompleteOpenAsync(const std::shared_ptr<tAsyncOpenContext> &context,

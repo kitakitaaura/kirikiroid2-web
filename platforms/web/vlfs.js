@@ -1027,6 +1027,111 @@
             return out;
         },
 
+        // ---------- 同步读（KRKR2_WEB_JSPI=OFF 构建）----------
+        // Without JSPI the engine cannot wait on a Promise, so these mirror
+        // read()/sizeOf() using synchronous XHRs: a ranged GET on a blob: URL
+        // of the File/Blob, or on the remote URL. FSA handles must already be
+        // resolved to Files and deflate ZIP entries already spilled to OPFS;
+        // both need async work that has to happen before boot.
+
+        ensureSizeSync(fd) {
+            var f = this._fds.get(fd);
+            if (!f) return -1;
+            var e = f.entry;
+            if (e.kind === 'fsa' && e.size < 0 && e.file) e.size = e.file.size;
+            return e.size;
+        },
+
+        readSync(fd, len) {
+            var f = this._fds.get(fd);
+            if (!f) throw new Error('vlfs: bad fd ' + fd);
+            if (len === 0) return new Uint8Array(0);
+            var e = f.entry;
+            if (this.ensureSizeSync(fd) < 0)
+                throw new Error('vlfs: unresolved file handle ' + f.path);
+            var pos = f.pos;
+            if (pos >= e.size) return new Uint8Array(0);
+            var n = Math.min(len, e.size - pos);
+            var out;
+            if (e.kind === 'overlay') {
+                out = e.data.subarray(pos, pos + n);
+            } else if (n >= DIRECT_READ_THRESHOLD) {
+                out = this._readSourceSync(e, pos, n);
+            } else {
+                out = new Uint8Array(n);
+                var done = 0;
+                while (done < n) {
+                    var b = Math.floor((pos + done) / BLOCK_SIZE);
+                    var key = e.id + '@' + b;
+                    var block = this._getCachedBlock(key);
+                    if (block === null) {
+                        var off = b * BLOCK_SIZE;
+                        var bn = Math.min(BLOCK_SIZE, e.size - off);
+                        block = this._storeBlock(key, this._readSourceSync(e, off, bn), bn);
+                    }
+                    done += this._copyBlock(block, (pos + done) % BLOCK_SIZE, out, done);
+                }
+            }
+            f.pos = pos + n;
+            return out;
+        },
+
+        _readSourceSync(e, pos, len) {
+            switch (e.kind) {
+                case 'blob': {
+                    if (!e.blob) {
+                        var whole = syncGet(e.url, e.requestHeaders, -1, 0);
+                        if (whole.status !== 200)
+                            throw new Error('fetch ' + e.url + ': ' + whole.status);
+                        e.blob = new Blob([whole.bytes]);
+                        e.size = e.blob.size;
+                    }
+                    return blobRangeSync(e.blob, pos, len);
+                }
+                case 'fsa':
+                    if (!e.file) throw new Error('vlfs: unresolved file handle');
+                    return blobRangeSync(e.file, pos, len);
+                case 'remote': {
+                    var r = syncGet(e.url, e.requestHeaders, pos, len);
+                    if (r.status === 200) {
+                        // 服务器忽略 Range：同 _readSource，缓存完整响应
+                        e.blob = new Blob([r.bytes]);
+                        e.size = e.blob.size;
+                        e.kind = 'blob';
+                        return r.bytes.slice(pos, pos + len);
+                    }
+                    if (r.status !== 206)
+                        throw new Error('range fetch ' + e.url + ': ' + r.status);
+                    return r.bytes.subarray(0, Math.min(len, r.bytes.length));
+                }
+                case 'zip': {
+                    if (e.method === 0) {
+                        if (e.dataOffset < 0)
+                            this._setZipDataOffset(e, this._readZipSourceBytesSync(
+                                e.zipSource, e.localHeaderOffset, 30));
+                        return this._readZipSourceBytesSync(
+                            e.zipSource, e.dataOffset + pos, len);
+                    }
+                    if (!e.opfsFile)
+                        throw new Error('vlfs: deflate ZIP entry was not unpacked before boot');
+                    return blobRangeSync(e.opfsFile, pos, len);
+                }
+                default:
+                    throw new Error('vlfs: unreadable entry kind ' + e.kind);
+            }
+        },
+
+        _readZipSourceBytesSync(source, pos, len) {
+            if (source.kind === 'blob') return blobRangeSync(source.blob, pos, len);
+            var r = syncGet(source.url, null, pos, len);
+            if (r.status !== 206)
+                throw new Error('zip range fetch ' + source.url + ': ' + r.status);
+            this._validateZipRangeResponse(source, { headers: { get: r.header } }, pos, len);
+            if (r.bytes.length < len)
+                throw new Error('short zip range: ' + r.bytes.length + ' < ' + len);
+            return r.bytes.subarray(0, len);
+        },
+
         // ---------- 内部：块缓存与数据源 ----------
 
         // 只从调用方持有的块复制，组装过程不再查询或修改缓存。
@@ -1053,9 +1158,13 @@
             var off = blockIdx * BLOCK_SIZE;
             var n = Math.min(BLOCK_SIZE, e.size - off);
             var data = await this._readSource(e, off, n);
+            return this._storeBlock(key, data, n);
+        },
+
+        _storeBlock(key, data, n) {
             if (!(data instanceof Uint8Array) || data.length !== n)
                 throw new Error('vlfs: short or invalid block read ' + key + ' (expected ' + n + ' bytes)');
-            cached = this._getCachedBlock(key);
+            var cached = this._getCachedBlock(key);
             if (cached !== null) return cached; // 并发取块去重（后到丢弃）
             this._blockCache.set(key, data);
             this._blockCacheBytes += data.length;
@@ -1127,8 +1236,12 @@
 
         // local file header 的 name/extra 长度可能与中央目录不同，须读 local header 定位数据区
         async _resolveZipDataOffset(e) {
-            var hdr = new DataView((await this._readZipSourceBytes(
-                e.zipSource, e.localHeaderOffset, 30)).buffer);
+            this._setZipDataOffset(e, await this._readZipSourceBytes(
+                e.zipSource, e.localHeaderOffset, 30));
+        },
+
+        _setZipDataOffset(e, header) {
+            var hdr = new DataView(header.buffer, header.byteOffset, header.byteLength);
             if (hdr.getUint32(0, true) !== 0x04034b50)
                 throw new Error('vlfs: bad zip local header @' + e.localHeaderOffset);
             var nameLen = hdr.getUint16(26, true);
@@ -1348,6 +1461,44 @@
             else if (prefix !== top) return '';
         }
         return prefix || '';
+    }
+
+    // Synchronous GET for builds without JSPI. A main-thread sync XHR can only
+    // return text, so the body is read as x-user-defined (one byte per char).
+    function syncGet(url, headers, pos, len) {
+        var x = new XMLHttpRequest();
+        x.open('GET', url, false);
+        x.overrideMimeType('text/plain; charset=x-user-defined');
+        if (headers) for (var k in headers) x.setRequestHeader(k, headers[k]);
+        if (pos >= 0) x.setRequestHeader('Range', 'bytes=' + pos + '-' + (pos + len - 1));
+        x.send();
+        var s = x.responseText;
+        var out = new Uint8Array(s.length);
+        for (var i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+        return {
+            status: x.status, bytes: out,
+            header: function (name) { return x.getResponseHeader(name); }
+        };
+    }
+
+    // Each Blob keeps one blob: URL for the page's lifetime; the Blobs are
+    // registered game files that stay referenced anyway.
+    var blobUrls = new WeakMap();
+
+    function blobRangeSync(blob, pos, len) {
+        var url = blobUrls.get(blob);
+        if (!url) {
+            url = URL.createObjectURL(blob);
+            blobUrls.set(blob, url);
+        }
+        var r = syncGet(url, null, pos, len);
+        var bytes = r.bytes;
+        // 浏览器忽略 blob: URL 的 Range 时返回整个文件
+        if (r.status === 200 && bytes.length === blob.size && len !== blob.size)
+            bytes = bytes.subarray(pos, pos + len);
+        if (bytes.length !== len)
+            throw new Error('vlfs: short sync read ' + bytes.length + ' < ' + len);
+        return bytes;
     }
 
     window.VLFS = VLFS;

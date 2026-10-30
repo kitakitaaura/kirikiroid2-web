@@ -161,6 +161,24 @@ jobs:
           node tests/web/vlfs_block_cache.test.mjs out/web/release/vlfs.js
           node tests/web/web_release_asset_pair.test.mjs out/web/release
 
+      # Same sources without WebAssembly JSPI, for Safari < 27. It reuses the
+      # vcpkg binary cache from the build above and ships in nojspi/.
+      - name: Build no-JSPI variant
+        run: |
+          set -o pipefail
+          cmake --preset "Web Release Config" -B out/web/release-nojspi \
+            -DKRKR2_WEB_JSPI=OFF \
+            -DKRKR2_WEB_ENABLE_SOURCE_MAP=OFF \
+            -DKRKR2_BUILD_VERSION="$BUILD_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-nojspi" \
+            2>&1 | tee /tmp/cmake-configure-nojspi.log
+          cmake --build out/web/release-nojspi 2>&1 | tee /tmp/cmake-build-nojspi.log
+          node tests/web/vlfs_block_cache.test.mjs out/web/release-nojspi/vlfs.js
+          node tests/web/web_release_asset_pair.test.mjs out/web/release-nojspi
+          mkdir -p out/web/release/nojspi
+          for f in index.html index.js index.wasm index.worker.js vlfs.js assets.zip; do
+            if [ -f "out/web/release-nojspi/$f" ]; then cp "out/web/release-nojspi/$f" out/web/release/nojspi/; fi
+          done
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -170,6 +188,8 @@ jobs:
           path: |
             /tmp/cmake-configure.log
             /tmp/cmake-build.log
+            /tmp/cmake-configure-nojspi.log
+            /tmp/cmake-build-nojspi.log
             out/web/release/vcpkg-manifest-install.log
             ${{ env.VCPKG_ROOT }}/buildtrees/**/*.log
 
@@ -192,6 +212,7 @@ jobs:
             out/web/release/baidu_verify_codeva-3Z4bQwqyXI.html
             out/web/release/robots.txt
             out/web/release/sitemap.xml
+            out/web/release/nojspi/
 
       - name: Check Cloudflare credentials
         run: |

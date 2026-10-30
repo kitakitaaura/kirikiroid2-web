@@ -956,7 +956,8 @@
         // --- JSPI 能力检测：主线程文件读依赖 WebAssembly JSPI（VirtualLazyFS），
         // 缺失时引擎会死在 glue 的 "JSPI not supported" 断言上，用户只能看到
         // 天书。这里提前检测并按浏览器给出明确的升级/换浏览器指引。---
-        var jspiUnsupported = !(typeof WebAssembly !== 'undefined' &&
+        // KRKR2_WEB_JSPI=OFF 构建不需要 JSPI，替换为 false
+        var jspiUnsupported = @KRKR2_WEB_REQUIRES_JSPI@ && !(typeof WebAssembly !== 'undefined' &&
             typeof WebAssembly.Suspending === 'function' &&
             typeof WebAssembly.promising === 'function');
         if (jspiUnsupported) {

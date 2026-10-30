@@ -61,7 +61,7 @@
 #include "Platform.h"
 #include <fmt/printf.h>
 
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
 EM_ASYNC_JS(void, TVPWaitWaveSoundContinuation, (uintptr_t token), {
     var waits = globalThis.__tvpWaveSoundContinuationWaits;
     if (!waits) {
@@ -1933,7 +1933,7 @@ void tTVPWaveSoundBufferDecodeThread::Execute() {
 
             if(Running) {
                 volatile tTJSCriticalSectionHolder cs_holder(OneLoopCS);
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
                 // Android Execute@0x970154 invokes FillL2Buffer synchronously.
                 // Web keeps the same one-loop exclusion/lifetime but waits for
                 // the native audio continuation, never for a JavaScript/VLFS
@@ -2070,7 +2070,7 @@ tTJSNI_WaveSoundBuffer::tTJSNI_WaveSoundBuffer() {
     L2BufferWritePos = 0;
     L2BufferRemain = 0;
     L2BufferEnded = false;
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     AsyncOpenGeneration = 0;
     AsyncPlaybackGeneration = 0;
     AsyncFillGeneration = 0;
@@ -2488,7 +2488,7 @@ void tTJSNI_WaveSoundBuffer::ResetSamplePositions() {
 //---------------------------------------------------------------------------
 void tTJSNI_WaveSoundBuffer::Clear() {
     // clear all status and unload current decoder
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     ++AsyncOpenGeneration;
     AsyncOpenPending = false;
 #endif
@@ -2496,7 +2496,7 @@ void tTJSNI_WaveSoundBuffer::Clear() {
     ThreadCallbackEnabled = false;
     TVPCheckSoundBufferAllSleep();
     Thread->Interrupt();
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     {
         // A queued continuation owns a dispatch reference to this object. The
         // generation check prevents it from starting after this point; this CS
@@ -2509,7 +2509,7 @@ void tTJSNI_WaveSoundBuffer::Clear() {
     ClearFilterChain();
     if(Decoder)
         delete Decoder, Decoder = nullptr;
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     }
 #endif
     BufferPlaying = false;
@@ -2613,7 +2613,7 @@ bool tTJSNI_WaveSoundBuffer::FillL2Buffer(bool firstwrite,
     return true;
 }
 
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
 void tTJSNI_WaveSoundBuffer::FillL2BufferAsync(
     bool firstwrite, bool fromdecodethread,
     tFillL2BufferAsyncCallback completion) {
@@ -3237,7 +3237,7 @@ void tTJSNI_WaveSoundBuffer::StartPlay() {
     Thread->Continue();
 }
 
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
 std::shared_ptr<tTJSNI_WaveSoundBuffer::tAsyncPlayContext>
 tTJSNI_WaveSoundBuffer::StartPlayAsync() {
     if(!Decoder)
@@ -3395,7 +3395,7 @@ void tTJSNI_WaveSoundBuffer::StopPlay() {
 //---------------------------------------------------------------------------
 void tTJSNI_WaveSoundBuffer::Play() {
     // play from first or current position
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     // A serialized TJS caller cannot reach this branch: Open does not return
     // while its VLFS continuation is pending. Keep re-entrant browser events
     // from publishing a status that the native implementations never expose.
@@ -3406,7 +3406,7 @@ void tTJSNI_WaveSoundBuffer::Play() {
         return;
     if(BufferPlaying)
         return;
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     if(AsyncStartPending)
         return;
 
@@ -3450,7 +3450,7 @@ void tTJSNI_WaveSoundBuffer::Play() {
 //---------------------------------------------------------------------------
 void tTJSNI_WaveSoundBuffer::Stop() {
     // stop playing
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     auto pendingPlay = AsyncPlayContext;
     ++AsyncPlaybackGeneration;
     AsyncStartPending = false;
@@ -3513,7 +3513,7 @@ void tTJSNI_WaveSoundBuffer::TimerBeatHandler() {
 }
 
 //---------------------------------------------------------------------------
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
 void tTJSNI_WaveSoundBuffer::CompleteOpenAsync(
     const std::shared_ptr<tAsyncOpenContext> &context,
     tTVPWaveDecoder *decoder, std::exception_ptr error) {
@@ -3657,7 +3657,7 @@ void tTJSNI_WaveSoundBuffer::Open(const ttstr &storagename) {
 
     Clear();
 
-#ifdef __EMSCRIPTEN__
+#ifdef TVP_WAVE_ASYNC_WEB
     auto context = std::make_shared<tAsyncOpenContext>();
     context->Buffer = this;
     context->Generation = ++AsyncOpenGeneration;

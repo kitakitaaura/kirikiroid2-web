@@ -94,6 +94,15 @@ EM_JS(double, vlfs_js_seek, (int fd, double offset, int whence), {
 
 EM_JS(double, vlfs_js_size, (int fd), { return VLFS.sizeOf(fd); });
 
+#ifdef KRKR2_WEB_SYNC_IO
+// KRKR2_WEB_JSPI=OFF: the same entry points, answered synchronously by
+// VLFS.ensureSizeSync/readSync (sync XHR on blob: URLs). The proxied variants
+// must also finish inline: without JSPI the main thread may be blocked on a
+// lock while servicing them, so a Promise would never settle.
+EM_JS(double, vlfs_js_ensure_size_await, (int fd), {
+    return VLFS.ensureSizeSync(fd);
+});
+#else
 // FSA 懒元数据补全（罕见路径）
 EM_ASYNC_JS(double, vlfs_js_ensure_size_await, (int fd), {
     var f = VLFS._fds.get(fd);
@@ -104,6 +113,7 @@ EM_ASYNC_JS(double, vlfs_js_ensure_size_await, (int fd), {
     }
     return f.entry.size;
 });
+#endif
 
 EM_JS(int, vlfs_js_write, (int fd, const void *buf, int len), {
     return VLFS.write(fd, HEAPU8.subarray(buf, buf + len));
@@ -117,6 +127,18 @@ EM_JS(int, vlfs_js_read_cached, (int fd, void *buf, int len), {
     return data.length;
 });
 
+#ifdef KRKR2_WEB_SYNC_IO
+EM_JS(int, vlfs_js_read_await, (int fd, void *buf, int len), {
+    try {
+        var data = VLFS.readSync(fd, len);
+        HEAPU8.set(data, buf);
+        return data.length;
+    } catch (e) {
+        console.error('[vlfs] read failed:', e);
+        return -1;
+    }
+});
+#else
 // JSPI 挂起读（仅主线程、且调用栈源自 promising 导出时合法）
 EM_ASYNC_JS(int, vlfs_js_read_await, (int fd, void *buf, int len), {
     try {
@@ -130,6 +152,7 @@ EM_ASYNC_JS(int, vlfs_js_read_await, (int fd, void *buf, int len), {
         return -1;
     }
 });
+#endif
 
 // 真正的 callback 异步读：即使块缓存命中也经 Promise microtask 完成，
 // 从而保证 C++ completion 永不内联。Promise 始终在主线程完成；上层流
@@ -168,6 +191,26 @@ extern "C" EMSCRIPTEN_KEEPALIVE void vlfs_proxy_finish(void *ctx) {
     emscripten_proxy_finish((em_proxying_ctx *)ctx);
 }
 
+#ifdef KRKR2_WEB_SYNC_IO
+EM_JS(void, vlfs_js_read_proxied, (void *ctx, int fd, void *buf, int len, int *resPtr), {
+    var n;
+    try {
+        var data = VLFS.readSync(fd, len);
+        HEAPU8.set(data, buf);
+        n = data.length;
+    } catch (err) {
+        console.error('[vlfs] proxied read failed:', err);
+        n = -1;
+    }
+    HEAP32[resPtr >> 2] = n;
+    _vlfs_proxy_finish(ctx);
+});
+
+EM_JS(void, vlfs_js_ensure_size_proxied, (void *ctx, int fd, double *resPtr), {
+    HEAPF64[resPtr >> 3] = VLFS.ensureSizeSync(fd);
+    _vlfs_proxy_finish(ctx);
+});
+#else
 // 在主线程发起读：先试同步缓存命中，未命中 .then() 异步完成
 EM_JS(void, vlfs_js_read_proxied, (void *ctx, int fd, void *buf, int len, int *resPtr), {
     var cached = VLFS.readCached(fd, len);
@@ -202,6 +245,7 @@ EM_JS(void, vlfs_js_ensure_size_proxied, (void *ctx, int fd, double *resPtr), {
     }
     done(f.entry.size);
 });
+#endif
 
 // ===========================================================================
 // 线程分发
