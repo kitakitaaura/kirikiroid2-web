@@ -61,9 +61,9 @@ const continuationImports = WebAssembly.Module.imports(module).filter(
     item => item.module === "env" &&
         item.kind === "function" &&
         item.name.includes("WaveSoundContinuation"));
-// KRKR2_WEB_JSPI=OFF builds use the synchronous sound path, so they import
-// no continuation functions; shell.html records which build this is.
-const jspiBuild = !/jspiUnsupported = false &&/.test(html);
+// KRKR2_WEB_JSPI=OFF builds (checked with --no-jspi) use the synchronous
+// sound path, so they import no continuation functions.
+const jspiBuild = !process.argv.includes("--no-jspi");
 assert.deepEqual(
     continuationImports.map(item => item.name).sort(),
     jspiBuild ? [

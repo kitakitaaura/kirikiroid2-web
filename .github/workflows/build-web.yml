@@ -201,7 +201,7 @@ jobs:
             2>&1 | tee /tmp/cmake-configure-nojspi.log
           cmake --build out/web/release-nojspi 2>&1 | tee /tmp/cmake-build-nojspi.log
           node tests/web/vlfs_block_cache.test.mjs out/web/release-nojspi/vlfs.js
-          node tests/web/web_release_asset_pair.test.mjs out/web/release-nojspi
+          node tests/web/web_release_asset_pair.test.mjs out/web/release-nojspi --no-jspi
           mkdir -p out/web/release/nojspi
           for f in index.html index.js index.wasm index.worker.js vlfs.js assets.zip; do
             if [ -f "out/web/release-nojspi/$f" ]; then cp "out/web/release-nojspi/$f" out/web/release/nojspi/; fi
